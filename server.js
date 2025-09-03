@@ -2,17 +2,19 @@
 
 const net = require('net');
 const http = require('http');
+const bs58 = require('bs58');
 const crypto = require('crypto');
 
 // --- Configuration ---
 const PROXY_PORT = 3333; // Port for miners to connect to
 const DIGIBYTE_RPC_HOST = '192.168.7.149'; // Digibyte Core RPC host
-const DIGIBYTE_RPC_PORT = 9001; // Digibyte Core RPC port (mainnet default)
+const DIGIBYTE_RPC_PORT = 9002; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
 
 // --- IMPORTANT ---
 // Use your RPC username and the ORIGINAL plain-text password you used to generate the rpcauth line.
 // Example: If your username is 'digiuser' and password is 'supersecret', set it to 'digiuser:supersecret'.
 const DIGIBYTE_RPCAUTH = 'digiuser:digipoolpass'; // CHANGE THIS
+const POOL_PAYOUT_ADDRESS = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
 // --- Global State ---
 const connectedMiners = new Set();
 const extranonce1 = crypto.randomBytes(4).toString('hex'); // 4-byte extranonce for this proxy session
@@ -21,6 +23,18 @@ let isFetchingJob = false; // Flag to prevent concurrent getblocktemplate calls
 
 console.log(`Starting Stratum Proxy for Digibyte Core v8.22.2...`);
 
+/**
+ * Calculates the difficulty from the compact 'bits' format.
+ * @param {string} bitsHex The 'bits' value from the block template as a hex string.
+ * @returns {number} The calculated difficulty.
+ */
+function difficultyFromBits(bitsHex) {
+    const targetMax = 0x0000ffff * Math.pow(2, 208); // Difficulty 1 target
+    const exponent = parseInt(bitsHex.substring(0, 2), 16);
+    const mantissa = parseInt(bitsHex.substring(2, 8), 16);
+    const target = mantissa * Math.pow(2, 8 * (exponent - 3));
+    return targetMax / target;
+}
 // --- Digibyte Core RPC Client ---
 /**
  * Makes an RPC call to the Digibyte Core server.
@@ -32,7 +46,7 @@ function callDigibyteRPC(method, params = []) {
     return new Promise((resolve, reject) => {
         const postData = JSON.stringify({
             jsonrpc: '1.0',
-            id: 'goose-proxy',
+            id: 'SlimStratumSolo-proxy',
             method: method,
             params: params,
         });
@@ -110,6 +124,27 @@ function reverseHex(hex) {
 }
 
 /**
+ * Encodes a number into a variable-length integer (VarInt) hex string.
+ * @param {number} num The number to encode.
+ * @returns {string} The VarInt hex string.
+ */
+function toVarIntHex(num) {
+    if (num < 0xfd) {
+        return num.toString(16).padStart(2, '0');
+    } else if (num <= 0xffff) {
+        return 'fd' + toLittleEndianHex(num, 2);
+    } else if (num <= 0xffffffff) {
+        return 'fe' + toLittleEndianHex(num, 4);
+    } else {
+        // For BigInt, convert to 8-byte little-endian hex
+        const buf = Buffer.alloc(8);
+        buf.writeBigUInt64LE(BigInt(num));
+        return 'ff' + buf.toString('hex');
+    }
+}
+
+
+/**
  * Performs a double SHA256 hash on a buffer.
  * @param {Buffer} buffer The data to hash.
  * @returns {Buffer} The resulting 32-byte hash.
@@ -130,14 +165,15 @@ async function fetchAndNotifyNewJob() {
     try {
         console.log('Fetching new block template from Digibyte Core...');
         // Digibyte Core requires the 'segwit' rule to be specified to get a valid block template.
-        // We also request 'coinbasetxn' to get a coinbase transaction template.
+        
         const template = await callDigibyteRPC('getblocktemplate', [{
             "mode": "template",
-            "rules": ["segwit"] // Explicitly request segwit rules as required by the node.
+            "rules": ["segwit"], // Explicitly request segwit rules as required by the node.
+            
         }]);
-        
-        if (!template || !template.coinbasetxn) {
-            console.error('Failed to get a valid block template with coinbasetxn. Check Digibyte Core. Template:', JSON.stringify(template));
+        //DEBUG: console.log(`Template received: ${JSON.stringify(template)}`);
+        if (!template) {
+            console.error('Failed to get a valid block template. Check Digibyte Core. Template:', JSON.stringify(template));
             isFetchingJob = false;
             return;
         }
@@ -294,7 +330,9 @@ const server = net.createServer((socket) => {
                         }
 
                         // Extract submitted share data from miner
-                        const [workerName, submittedJobId, extranonce2, ntimeHex, nonceHex] = request.params;
+                        const [workerName, submittedJobId, extranonce2, ntimeHex, nonceHex, versionBits] = request.params;
+                        console.log(`versionBits: {$versionBits}, Converted: ${difficultyFromBits(versionBits)}}`);
+                        console.log(`currentJobBits: {$currentJob.bits}, Converted: ${difficultyFromBits(currentJob.bits)}}`);
 
                         if (submittedJobId !== currentJob.previousblockhash) {
                             console.warn(`Miner ${socket.remoteAddress} submitted share for outdated job: ${submittedJobId} vs current ${currentJob.previousblockhash}`);
@@ -310,27 +348,29 @@ const server = net.createServer((socket) => {
 
                         console.log(`Miner ${socket.remoteAddress} submitted a potential block solution! Reconstructing and submitting...`);
 
-                        // 1. Reconstruct the coinbase transaction
-                        const coinbaseTxTemplate = Buffer.from(currentJob.coinbasetxn.data, 'hex');
-                        const extranonce = extranonce1 + extranonce2;
-                        const coinbaseScript = Buffer.from(currentJob.coinbasetxn.coinbase_script, 'hex');
-                        
-                        const finalCoinbaseScript = Buffer.concat([coinbaseScript, Buffer.from(extranonce, 'hex')]);
-                        
-                        const scriptSigSizeOffset = currentJob.coinbasetxn.script_sig_size_offset;
-                        const scriptSigOffset = currentJob.coinbasetxn.script_sig_offset;
-
-                        const finalCoinbaseTx = Buffer.concat([
-                            coinbaseTxTemplate.slice(0, scriptSigSizeOffset),
-                            Buffer.from([finalCoinbaseScript.length]),
-                            finalCoinbaseScript,
-                            coinbaseTxTemplate.slice(scriptSigOffset + coinbaseScript.length)
-                        ]);
-
-                        const coinbaseTxid = sha256d(finalCoinbaseTx);
+                        // 1. Create coinbase transaction hash from miner's data
+                        const heightHex = toLittleEndianHex(currentJob.height, 4); // Block height for BIP34
+                        const heightBytes = Buffer.from(heightHex, 'hex');
+                        const heightVarInt = toVarIntHex(heightBytes.length);
+                        const coinbaseScriptHex = heightVarInt + heightHex + currentJob.coinbaseaux.flags + extranonce1 + extranonce2;
+                        const coinbase = '01000000' + // version
+                                         '01' + // number of inputs
+                                         '0000000000000000000000000000000000000000000000000000000000000000' + // prevout hash
+                                         'ffffffff' + // prevout index,
+                                         toVarIntHex(coinbaseScriptHex.length / 2) + coinbaseScriptHex + // scriptsig
+                                         'ffffffff' + // sequence
+                                         '01' + // number of outputs
+                                         toLittleEndianHex(currentJob.coinbasevalue, 8) + // output value
+                                         '19' + // scriptPubKey length (25 bytes)
+                                         '76a914' + // OP_DUP OP_HASH160 [push 20 bytes]
+                                         bs58.decode(POOL_PAYOUT_ADDRESS).toString('hex').slice(2, 42) + // 20-byte pubkey hash
+                                         '88ac' + // OP_EQUALVERIFY OP_CHECKSIG
+                                         '00000000'; // locktime
+                        const coinbaseTx = Buffer.from(coinbase, 'hex');
+                        const coinbaseTxid = sha256d(coinbaseTx);
 
                         // 2. Re-calculate the Merkle Root
-                        let merkleHashes = [coinbaseTxid, ...currentJob.transactions.map(tx => Buffer.from(tx.hash, 'hex'))];
+                        let merkleHashes = [coinbaseTxid, ...currentJob.transactions.map(tx => Buffer.from(reverseHex(tx.hash), 'hex'))];
                         while (merkleHashes.length > 1) {
                             if (merkleHashes.length % 2 !== 0) {
                                 merkleHashes.push(merkleHashes[merkleHashes.length - 1]);
@@ -342,11 +382,11 @@ const server = net.createServer((socket) => {
                             }
                             merkleHashes = nextLevel;
                         }
-                        const merkleRoot = merkleHashes[0];
+                        const merkleRoot = merkleHashes[0]; // This is already a little-endian buffer
 
                         // 3. Construct the block header
                         const header = Buffer.alloc(80);
-                        header.writeInt32LE(currentJob.version, 0);
+                        header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex');
                         header.write(reverseHex(currentJob.previousblockhash), 4, 32, 'hex');
                         merkleRoot.copy(header, 36);
                         header.write(reverseHex(ntimeHex), 68, 4, 'hex');
@@ -354,16 +394,17 @@ const server = net.createServer((socket) => {
                         header.write(reverseHex(nonceHex), 76, 4, 'hex');
 
                         // 4. Serialize the full block
-                        const varIntTransactions = Buffer.from([currentJob.transactions.length + 1]);
+                        const txCount = toVarIntHex(currentJob.transactions.length + 1);
                         const blockHex = Buffer.concat([
                             header,
-                            varIntTransactions,
-                            finalCoinbaseTx,
+                            Buffer.from(txCount, 'hex'),
+                            coinbaseTx,
                             ...currentJob.transactions.map(tx => Buffer.from(tx.data, 'hex'))
                         ]).toString('hex');
 
                         // 5. Submit the block
                         try {
+                            console.log(`Submitting block hex to Digibyte Core: ${blockHex}`);
                             const submissionResult = await callDigibyteRPC('submitblock', [blockHex]);
                             if (submissionResult === null) {
                                 console.log('🎉🎉🎉 BLOCK FOUND AND ACCEPTED! 🎉🎉🎉');
@@ -374,7 +415,7 @@ const server = net.createServer((socket) => {
                                 socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: false, error: [22, `Block rejected: ${submissionResult}`, null] }) + '\n');
                             }
                         } catch (e) {
-                            console.error('Error submitting block to Digibyte Core:', e);
+                            //console.error('Error submitting block to Digibyte Core:', e); -surpess this for now so I can see the bits info
                             socket.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: false, error: [-32000, `RPC submission error: ${e.message}`, null] }) + '\n');
                         }
                         break;

@@ -14,5 +14,8 @@
     "nodejs"
   ],
   "author": "Goose AI",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "bs58": "^5.0.0"
+  }
 }

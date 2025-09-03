@@ -8,9 +8,7 @@ WORKDIR /app
 # This step allows Docker to cache dependencies if they don't change
 COPY package*.json ./
 
-# Install any Node.js dependencies.
-# For this minimal example, there are no external dependencies beyond built-in Node.js modules,
-# so `npm install` will mainly set up the package.
+# Install production dependencies based on package.json
 RUN npm install --omit=dev
 
 # Copy the rest of the application code to the working directory
