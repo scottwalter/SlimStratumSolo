@@ -1,27 +1,38 @@
 // server.js
 
-const net = require('net');
-const http = require('http');
+const net = require('node:net');
+const rpcServices = require('./src/backend/controller/rpcServices');
+const getBlockTemplateBuilder = require('./src/backend/builder/blockTemplateBuilder');
+const submitBlockBuilder = require('./src/backend/builder/submitBlockBuilder');
+
 const bs58 = require('bs58');
 const crypto = require('crypto');
 
 // --- Configuration ---
-const PROXY_PORT = 3333; // Port for miners to connect to
-const DIGIBYTE_RPC_HOST = '192.168.7.149'; // Digibyte Core RPC host
-const DIGIBYTE_RPC_PORT = 9002; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
+const proxyPort = 3333; // Port for miners to connect to
+const rpcHost = '192.168.7.149'; // Digibyte Core RPC host
+const rpcPort = 9002; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
+const rpcAuth = 'digiuser:digipoolpass'; // CHANGE THIS
+const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
+const defaultDifficulty = 1000; //Set the minimum difficulty level for miners
+//Create a config object to pass around for use
+const config = {
+    "proxyPort":proxyPort,
+    "rpcHost":rpcHost,
+    "rpcPort":rpcPort,
+    "rpcAuth":rpcAuth,
+    "poolPayoutAddress":poolPayoutAddress,
+    "defaultDifficulty":defaultDifficulty,
 
-// --- IMPORTANT ---
-// Use your RPC username and the ORIGINAL plain-text password you used to generate the rpcauth line.
-// Example: If your username is 'digiuser' and password is 'supersecret', set it to 'digiuser:supersecret'.
-const DIGIBYTE_RPCAUTH = 'digiuser:digipoolpass'; // CHANGE THIS
-const POOL_PAYOUT_ADDRESS = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
+}
+
 // --- Global State ---
 const connectedMiners = new Set();
 const extranonce1 = crypto.randomBytes(4).toString('hex'); // 4-byte extranonce for this proxy session
 let currentJob = null; // Stores the current block template from Digibyte Core
 let isFetchingJob = false; // Flag to prevent concurrent getblocktemplate calls
 
-console.log(`Starting Stratum Proxy for Digibyte Core v8.22.2...`);
+console.log(`Starting Slim Stratum Solo Proxy...`);
 
 /**
  * Calculates the difficulty from the compact 'bits' format.
@@ -35,68 +46,7 @@ function difficultyFromBits(bitsHex) {
     const target = mantissa * Math.pow(2, 8 * (exponent - 3));
     return targetMax / target;
 }
-// --- Digibyte Core RPC Client ---
-/**
- * Makes an RPC call to the Digibyte Core server.
- * @param {string} method The RPC method to call (e.g., 'getblocktemplate', 'submitblock').
- * @param {Array} params An array of parameters for the RPC method.
- * @returns {Promise<any>} A promise that resolves with the RPC result or rejects with an error.
- */
-function callDigibyteRPC(method, params = []) {
-    return new Promise((resolve, reject) => {
-        const postData = JSON.stringify({
-            jsonrpc: '1.0',
-            id: 'SlimStratumSolo-proxy',
-            method: method,
-            params: params,
-        });
 
-        console.log(`Sending RPC payload for method '${method}':`, postData);
-
-        const auth = 'Basic ' + Buffer.from(DIGIBYTE_RPCAUTH).toString('base64');
-
-        const options = {
-            hostname: DIGIBYTE_RPC_HOST,
-            port: DIGIBYTE_RPC_PORT,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData),
-                'Authorization': auth,
-            },
-        };
-
-        const req = http.request(options, (res) => {
-            let rawData = '';
-            res.on('data', (chunk) => {
-                rawData += chunk;
-            });
-            res.on('end', () => {
-                try {
-                    if (!rawData) {
-                        // The server closed the connection without sending data. This is often an auth failure.
-                        throw new Error(`Empty response from RPC server. Check RPC credentials (rpcauth) and rpcallowip in digibyte.conf. Status: ${res.statusCode}`);
-                    }
-                    const parsedData = JSON.parse(rawData);
-                    if (parsedData.error) {
-                        reject(parsedData.error);
-                    } else {
-                        resolve(parsedData.result);
-                    }
-                } catch (e) {
-                    reject(new Error(`Failed to parse RPC response: ${e.message} - ${rawData}`));
-                }
-            });
-        });
-
-        req.on('error', (e) => {
-            reject(new Error(`RPC request error to Digibyte Core: ${e.message}`));
-        });
-
-        req.write(postData);
-        req.end();
-    });
-}
 
 /**
  * Converts a number to a little-endian hex string of a given byte length.
@@ -164,61 +114,85 @@ async function fetchAndNotifyNewJob() {
         return;
     }
     isFetchingJob = true;
+    //Boolean to decide if we notify or not based on fetched template
+    let isNewBlock = true;
+    
+
     try {
-        console.log('Fetching new block template from Digibyte Core...');
-        // Digibyte Core requires the 'segwit' rule to be specified to get a valid block template.
+        let currentHeight = 0 ; //set to zero in case it is a first run.
+        //If there is a currentJob, set the currentHeight to it
+        if(currentJob){
+            currentHeight = currentJob.height;
+        }
+        //Fetch the block
+        console.log('Fetching new block template from Crypto Node...');
         
-        const template = await callDigibyteRPC('getblocktemplate', [{
-            "mode": "template", // We want a template to work on.
-            "rules": ["segwit"], // We support segwit rules.
-            "capabilities": ["coinbasetxn", "coinbase/append"] // IMPORTANT: This tells the node to include the transactions array and coinbaseaux data.
-        }]);
+        // Digibyte Core requires the 'segwit' rule to be specified to get a valid block template.
+        const template = await getBlockTemplateBuilder.getBlockTemplate(config);
         console.log(`Template received: ${JSON.stringify(template)}`);
+        
+        // Construct coinbase1 and coinbase2 for mining.notify
+        const heightBuffer = Buffer.alloc(4);
+        heightBuffer.writeUInt32LE(template.height);
+        const heightHexLE = heightBuffer.toString('hex'); // Little-endian hex of height
+        const heightPushOp = '04'; // Opcode for pushing 4 bytes of data
+
+        // coinbase1: Prefix of the coinbase scriptSig (height + extranonce1)
+        const coinbase1 = heightPushOp + heightHexLE + extranonce1;
+        // coinbase2: Suffix of the coinbase scriptSig (empty for now, as no flags from template)
+        const coinbase2 = '';
         if (!template) {
             console.error('Failed to get a valid block template. Check Digibyte Core. Template:', JSON.stringify(template));
             isFetchingJob = false;
             return;
+        }   
+        //See if we have a new block in the tempalte
+        if(currentHeight !== template.height){
+            //We have a new block, so swap the currentJob and set the notify flag to true;
+            currentJob = template;
+            console.log(`New job received: block ${template.height} - prevhash ${template.previousblockhash}`);
+        }else{
+            //Block is not new so no need to notify any miners
+            isNewBlock=false;
+            console.log(`curentJob is the current block height, so not notifying any miners.`);
         }
+        if(isNewBlock){ //We have a new block, so notify miners to clean_jobs and start crunching on this block
+            // Construct a simplified mining.notify for miners (Stratum V1-like)
+            // Parameters: [job_id, prevhash, coinbase1, coinbase2, merkle_branches, version, nbits, ntime, clean_jobs]
+            const jobId = currentJob.previousblockhash; // Using prevhash as job_id, common in V1
+            const prevHash = currentJob.previousblockhash;
+            const merkleBranches = [];
+            const version = toLittleEndianHex(currentJob.version, 4); // Block version, byte-swapped
+            const nBits = currentJob.bits; // Target difficulty in compact format
+            const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
+            const cleanJobs = true; // Clear previous jobs
 
-        currentJob = template;
-        console.log(`New job received: block ${template.height} - prevhash ${template.previousblockhash}`);
-
-        // Construct a simplified mining.notify for miners (Stratum V1-like)
-        // Parameters: [job_id, prevhash, coinbase1, coinbase2, merkle_branches, version, nbits, ntime, clean_jobs]
-        const jobId = currentJob.previousblockhash; // Using prevhash as job_id, common in V1
-        const prevHash = currentJob.previousblockhash;
-        const coinbase1 = '';
-        const coinbase2 = '';
-        const merkleBranches = [];
-        const version = toLittleEndianHex(currentJob.version, 4); // Block version, byte-swapped
-        const nBits = currentJob.bits; // Target difficulty in compact format
-        const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
-        const cleanJobs = true; // Clear previous jobs
-
-        const notifyMessage = JSON.stringify({
-            id: null,
-            method: 'mining.notify',
-            params: [
-                jobId,
-                prevHash,
-                coinbase1,
-                coinbase2,
-                merkleBranches,
-                version,
-                nBits,
-                nTime,
-                cleanJobs,
-            ],
-        }) + '\n';
+            const notifyMessage = JSON.stringify({
+                id: null,
+                method: 'mining.notify',
+                params: [
+                    jobId,
+                    prevHash,
+                    coinbase1,
+                    coinbase2,
+                    merkleBranches,
+                    version,
+                    nBits,
+                    nTime,
+                    cleanJobs,
+                ],
+            }) + '\n';
+            
+            let notifiedCount = 0;
+            connectedMiners.forEach(socket => {
+                if (socket.authenticated) { // Only send to authorized miners
+                    socket.write(notifyMessage); // The message already has a newline
+                    notifiedCount++;
+                }
+            });
+            console.log(`Notified ${notifiedCount} authenticated miners with new job.`);
+        }
         
-        let notifiedCount = 0;
-        connectedMiners.forEach(socket => {
-            if (socket.authenticated) { // Only send to authorized miners
-                socket.write(notifyMessage); // The message already has a newline
-                notifiedCount++;
-            }
-        });
-        console.log(`Notified ${notifiedCount} authenticated miners with new job.`);
 
     } catch (error) {
         console.error('Error fetching or notifying new job:', error);
@@ -256,7 +230,7 @@ const server = net.createServer((socket) => {
                             id: request.id,
                             result: [
                                 [
-                                    ['mining.set_difficulty', '1'], // Placeholder difficulty 1
+                                    ['mining.set_difficulty', '1000'], // Placeholder difficulty 1
                                     ['mining.notify', '1']
                                 ],
                                 extranonce1, // Session-wide extranonce1
@@ -310,7 +284,7 @@ const server = net.createServer((socket) => {
                         if (!socket.authenticated) {
                             console.warn(`Miner ${socket.remoteAddress} tried to submit without authorization.`);
                              const errorResponse = JSON.stringify({
-                                jsonrpc: '1.0',
+                                jsonrpc: '2.0',
                                 id: request.id,
                                 result: null,
                                 error: [24, 'Unauthorized', null],
@@ -322,7 +296,7 @@ const server = net.createServer((socket) => {
                         if (!currentJob) {
                             console.warn(`Miner ${socket.remoteAddress} submitted share but no current job available.`);
                             const errorResponse = JSON.stringify({
-                                jsonrpc: '1.0',
+                                jsonrpc: '2.0',
                                 id: request.id,
                                 result: null,
                                 error: [21, 'Job not found', null],
@@ -333,13 +307,13 @@ const server = net.createServer((socket) => {
 
                         // Extract submitted share data from miner
                         const [workerName, submittedJobId, extranonce2, ntimeHex, nonceHex, versionBits] = request.params;
-                        console.log(`versionBits: ${versionBits}, Converted: ${difficultyFromBits(versionBits)}}`);
-                        console.log(`currentJobBits: ${currentJob.bits}, Converted: ${difficultyFromBits(currentJob.bits)}}`);
-
+                        console.log(`versionBits: ${versionBits}, Converted: ${difficultyFromBits(versionBits)}`);
+                        console.log(`currentJobBits: ${currentJob.bits}, Converted: ${difficultyFromBits(currentJob.bits)}`);
+                        
                         if (submittedJobId !== currentJob.previousblockhash) {
                             console.warn(`Miner ${socket.remoteAddress} submitted share for outdated job: ${submittedJobId} vs current ${currentJob.previousblockhash}`);
                             const errorResponse = JSON.stringify({
-                                jsonrpc: '1.0',
+                                jsonrpc: '2.0',
                                 id: request.id,
                                 result: false,
                                 error: [22, 'Stale job', null],
@@ -347,78 +321,90 @@ const server = net.createServer((socket) => {
                             socket.write(errorResponse);
                             break;
                         }
+                        //See if we should even try to submit this block, has to be equal of greater than the currentJobBits
+                        if(difficultyFromBits(versionBits) >= difficultyFromBits(currentJob.bits)){
+                            console.log(`Miner ${socket.remoteAddress} submitted a potential block solution! Reconstructing and submitting...`);
 
-                        console.log(`Miner ${socket.remoteAddress} submitted a potential block solution! Reconstructing and submitting...`);
+                            // --- Block Construction Logic ---
 
-                        // --- Block Construction Logic ---
+                            // 1. Create the coinbase transaction.
+                            // This transaction is special and created by the pool. It includes the miner's reward.
+                            const heightBuffer = Buffer.alloc(4);
+                            heightBuffer.writeUInt32LE(currentJob.height);
+                            const heightHex = heightBuffer.toString('hex');
+                            const heightVarInt = toVarIntHex(heightBuffer.length); // Correctly get length from the buffer
+                            const coinbaseScriptHex = heightVarInt + heightHex + extranonce1 + extranonce2;
 
-                        // 1. Create the coinbase transaction.
-                        // This transaction is special and created by the pool. It includes the miner's reward.
-                        const heightBuffer = Buffer.alloc(4);
-                        heightBuffer.writeUInt32LE(currentJob.height);
-                        const heightHex = heightBuffer.toString('hex');
-                        const heightVarInt = toVarIntHex(heightBuffer.length); // Correctly get length from the buffer
-                        const coinbaseScriptHex = heightVarInt + heightHex + currentJob.coinbaseaux.flags + extranonce1 + extranonce2;
+                            // scriptPubKey: A standard P2PKH script sending the reward to the pool's address.
+                            const payoutScriptPubKey = '76a914' + bs58.decode(config.poolPayoutAddress).toString('hex').slice(2, -8) + '88ac';
 
-                        // scriptPubKey: A standard P2PKH script sending the reward to the pool's address.
-                        const payoutScriptPubKey = '76a914' + bs58.decode(POOL_PAYOUT_ADDRESS).toString('hex').slice(2, -8) + '88ac';
+                            const coinbaseTxHex = toLittleEndianHex(currentJob.version, 4) + // version
+                                '00' + // SegWit marker (if version >= 0x20000000)
+                                '01' + // SegWit flag (if version >= 0x20000000)
+                                '01' + // number of inputs
+                                '0000000000000000000000000000000000000000000000000000000000000000' + // prevout hash (null)
+                                'ffffffff' + // prevout index (max)
+                                toVarIntHex(coinbaseScriptHex.length / 2) + coinbaseScriptHex + // scriptSig
+                                'ffffffff' + // sequence
+                                '02' + // number of outputs (now 2: payout + witness commitment)
+                                toLittleEndianHex(currentJob.coinbasevalue, 8) + // Output 1: pool payout value
+                                toVarIntHex(payoutScriptPubKey.length / 2) + // Output 1: pool payout scriptPubKey length
+                                payoutScriptPubKey + // Output 1: pool payout scriptPubKey
+                                '0000000000000000' + // Output 2: witness commitment value (0 DGB)
+                                toVarIntHex((currentJob.default_witness_commitment.length / 2) + 2) + // Output 2: witness commitment scriptPubKey length (0x6a + 0x24 + 36 bytes)
+                                '6a24' + currentJob.default_witness_commitment + // Output 2: witness commitment scriptPubKey (OP_RETURN + PUSH_36 + commitment)
+                                '00000000'; // locktime
 
-                        const coinbaseTxHex = '01000000' + // version
-                            '01' + // number of inputs
-                            '0000000000000000000000000000000000000000000000000000000000000000' + // prevout hash (null)
-                            'ffffffff' + // prevout index (max)
-                            toVarIntHex(coinbaseScriptHex.length / 2) + coinbaseScriptHex + // scriptSig
-                            'ffffffff' + // sequence
-                            '01' + // number of outputs
-                            toLittleEndianHex(currentJob.coinbasevalue, 8) + // output value (satoshi)
-                            toVarIntHex(payoutScriptPubKey.length / 2) + // scriptPubKey length
-                            payoutScriptPubKey +
-                            '00000000'; // locktime
+                            const coinbaseTx = Buffer.from(coinbaseTxHex, 'hex');
+                            const coinbaseTxid = sha256d(coinbaseTx);
 
-                        const coinbaseTx = Buffer.from(coinbaseTxHex, 'hex');
-                        const coinbaseTxid = sha256d(coinbaseTx);
+                            // 2. Calculate the Merkle Root.
+                            // The transaction hashes from getblocktemplate are big-endian and must be reversed.
+                            const txHashes = currentJob.transactions.map(tx => Buffer.from(reverseHex(tx.hash), 'hex'));
+                            let merkleHashes = [coinbaseTxid, ...txHashes];
 
-                        // 2. Calculate the Merkle Root.
-                        // The transaction hashes from getblocktemplate are big-endian and must be reversed.
-                        const txHashes = currentJob.transactions.map(tx => Buffer.from(reverseHex(tx.hash), 'hex'));
-                        let merkleHashes = [coinbaseTxid, ...txHashes];
-
-                        while (merkleHashes.length > 1) {
-                            if (merkleHashes.length % 2 !== 0) {
-                                merkleHashes.push(merkleHashes[merkleHashes.length - 1]); // Duplicate last hash if odd number
+                            while (merkleHashes.length > 1) {
+                                if (merkleHashes.length % 2 !== 0) {
+                                    merkleHashes.push(merkleHashes[merkleHashes.length - 1]); // Duplicate last hash if odd number
+                                }
+                                const nextLevel = [];
+                                for (let i = 0; i < merkleHashes.length; i += 2) {
+                                    const combined = Buffer.concat([merkleHashes[i], merkleHashes[i + 1]]);
+                                    nextLevel.push(sha256d(combined));
+                                }
+                                merkleHashes = nextLevel;
                             }
-                            const nextLevel = [];
-                            for (let i = 0; i < merkleHashes.length; i += 2) {
-                                const combined = Buffer.concat([merkleHashes[i], merkleHashes[i + 1]]);
-                                nextLevel.push(sha256d(combined));
-                            }
-                            merkleHashes = nextLevel;
+                            const merkleRoot = merkleHashes[0]; // This is the final root, already in little-endian Buffer format.
+
+                            // 3. Construct the 80-byte block header.
+                            const header = Buffer.alloc(80);
+                            // Use versionBits from miner if available (for ASICBOOST), otherwise use template version.
+                            // All these fields must be written in little-endian format.
+                            header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex'); // versionBits is big-endian, template version is a number
+                            header.write(reverseHex(currentJob.previousblockhash), 4, 32, 'hex');
+                            merkleRoot.copy(header, 36);
+                            header.write(ntimeHex, 68, 4, 'hex'); // ntime from miner is already little-endian
+                            header.write(currentJob.bits, 72, 4, 'hex'); // bits from template is already little-endian
+                            header.write(nonceHex, 76, 4, 'hex'); // nonce from miner is already little-endian
+
+                            // 4. Serialize the full block.
+                            const txCount = toVarIntHex(1); // Only coinbase transaction
+                            const blockHex = Buffer.concat([ // This was the line with the issue.
+                                header,
+                                Buffer.from(txCount, 'hex'),
+                                coinbaseTx,
+                                ...currentJob.transactions.map(tx => Buffer.from(tx.data, 'hex'))
+                            ]).toString('hex'); // Correctly concatenate all parts of the block.
+
+                            // 5. Submit the block to the Digibyte Core node.
+                            console.log(`Would have sent this to submitBlock: ${blockHex},${request.id},${socket.remoteAddress}`);
+                            //submitBlock(blockHex, request.id, socket);
+                        }else{
+                            //Send back a message saying we accepted the share, even though it wasn't worthy of a new block
+                            socket.write(JSON.stringify({ id: request.id, result: true, error: null }) + '\n');
+                            console.log(`versionBits was not equal or greater than currentJob.bits, so didn't bother to submit to node.`);
                         }
-                        const merkleRoot = merkleHashes[0]; // This is the final root, already in little-endian Buffer format.
-
-                        // 3. Construct the 80-byte block header.
-                        const header = Buffer.alloc(80);
-                        // Use versionBits from miner if available (for ASICBOOST), otherwise use template version.
-                        // All these fields must be written in little-endian format.
-                        header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex'); // versionBits is big-endian, template version is a number
-                        header.write(reverseHex(currentJob.previousblockhash), 4, 32, 'hex');
-                        merkleRoot.copy(header, 36);
-                        header.write(ntimeHex, 68, 4, 'hex'); // ntime from miner is already little-endian
-                        header.write(currentJob.bits, 72, 4, 'hex'); // bits from template is already little-endian
-                        header.write(nonceHex, 76, 4, 'hex'); // nonce from miner is already little-endian
-
-                        // 4. Serialize the full block.
-                        const txCount = toVarIntHex(currentJob.transactions.length + 1);
-                        console.log(`Current Transactions: ${currentJob.transactions}`);
-                        const blockHex = Buffer.concat([ // This was the line with the issue.
-                            header,
-                            Buffer.from(txCount, 'hex'),
-                            coinbaseTx,
-                            ...currentJob.transactions.map(tx => Buffer.from(tx.data, 'hex'))
-                        ]).toString('hex'); // Correctly concatenate all parts of the block.
-
-                        // 5. Submit the block to the Digibyte Core node.
-                        submitBlock(blockHex, request.id, socket);
+                        //End of submit section
                         break;
 
                     default:
@@ -435,7 +421,7 @@ const server = net.createServer((socket) => {
             } catch (e) {
                 console.error(`Error parsing miner message from ${socket.remoteAddress}: ${e.message}. Raw data: '${message}'`);
                 const parseErrorResponse = JSON.stringify({
-                    jsonrpc: '1.0',
+                    jsonrpc: '2.0',
                     id: null,
                     error: {
                         code: -32700,
@@ -466,7 +452,7 @@ const server = net.createServer((socket) => {
  */
 async function submitBlock(blockHex, requestId, socket) {
     try {
-        const submissionResult = await callDigibyteRPC('submitblock', [blockHex]);
+        const submissionResult = await rpcServices.callRPCService('submitblock', [blockHex]);
         if (submissionResult === null) {
             // A 'null' result from submitblock means the block was accepted.
             console.log('🎉🎉🎉 BLOCK FOUND AND ACCEPTED! 🎉🎉🎉');
@@ -483,9 +469,9 @@ async function submitBlock(blockHex, requestId, socket) {
     }
 }
 
-server.listen(PROXY_PORT, () => {
-    console.log(`Stratum proxy listening on port ${PROXY_PORT}`);
-    console.log(`Proxying to Digibyte Core RPC at ${DIGIBYTE_RPC_HOST}:${DIGIBYTE_RPC_PORT}`);
+server.listen(config.proxyPort, () => {
+    console.log(`Stratum proxy listening on port ${config.proxyPort}`);
+    console.log(`Proxying to Digibyte Core RPC at ${config.rpcHost}:${config.rpcPort}`);
     fetchAndNotifyNewJob();
 });
 
