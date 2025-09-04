@@ -169,9 +169,9 @@ async function fetchAndNotifyNewJob() {
         // Digibyte Core requires the 'segwit' rule to be specified to get a valid block template.
         
         const template = await callDigibyteRPC('getblocktemplate', [{
-            "mode": "template",
-            "rules": ["segwit"], // Explicitly request segwit rules as required by the node.
-            
+            "mode": "template", // We want a template to work on.
+            "rules": ["segwit"], // We support segwit rules.
+            "capabilities": ["coinbasetxn", "coinbase/append"] // IMPORTANT: This tells the node to include the transactions array and coinbaseaux data.
         }]);
         console.log(`Template received: ${JSON.stringify(template)}`);
         if (!template) {
@@ -354,9 +354,10 @@ const server = net.createServer((socket) => {
 
                         // 1. Create the coinbase transaction.
                         // This transaction is special and created by the pool. It includes the miner's reward.
-                        const heightHex = toLittleEndianHex(currentJob.height, 4); // Block height for BIP34 compliance
-                        const heightVarInt = toVarIntHex(Buffer.from(heightHex, 'hex').length);
-                        // scriptSig: block height + coinbaseaux flags + extranonce1 (proxy) + extranonce2 (miner)
+                        const heightBuffer = Buffer.alloc(4);
+                        heightBuffer.writeUInt32LE(currentJob.height);
+                        const heightHex = heightBuffer.toString('hex');
+                        const heightVarInt = toVarIntHex(heightBuffer.length); // Correctly get length from the buffer
                         const coinbaseScriptHex = heightVarInt + heightHex + currentJob.coinbaseaux.flags + extranonce1 + extranonce2;
 
                         // scriptPubKey: A standard P2PKH script sending the reward to the pool's address.
@@ -399,21 +400,22 @@ const server = net.createServer((socket) => {
                         const header = Buffer.alloc(80);
                         // Use versionBits from miner if available (for ASICBOOST), otherwise use template version.
                         // All these fields must be written in little-endian format.
-                        header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex');
+                        header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex'); // versionBits is big-endian, template version is a number
                         header.write(reverseHex(currentJob.previousblockhash), 4, 32, 'hex');
                         merkleRoot.copy(header, 36);
-                        header.write(reverseHex(ntimeHex), 68, 4, 'hex');
-                        header.write(reverseHex(currentJob.bits), 72, 4, 'hex');
-                        header.write(reverseHex(nonceHex), 76, 4, 'hex');
+                        header.write(ntimeHex, 68, 4, 'hex'); // ntime from miner is already little-endian
+                        header.write(currentJob.bits, 72, 4, 'hex'); // bits from template is already little-endian
+                        header.write(nonceHex, 76, 4, 'hex'); // nonce from miner is already little-endian
 
                         // 4. Serialize the full block.
                         const txCount = toVarIntHex(currentJob.transactions.length + 1);
-                        const blockHex = Buffer.concat([
+                        console.log(`Current Transactions: ${currentJob.transactions}`);
+                        const blockHex = Buffer.concat([ // This was the line with the issue.
                             header,
                             Buffer.from(txCount, 'hex'),
                             coinbaseTx,
                             ...currentJob.transactions.map(tx => Buffer.from(tx.data, 'hex'))
-                        ]).toString('hex');
+                        ]).toString('hex'); // Correctly concatenate all parts of the block.
 
                         // 5. Submit the block to the Digibyte Core node.
                         submitBlock(blockHex, request.id, socket);
