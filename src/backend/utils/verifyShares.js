@@ -71,7 +71,7 @@ function buildBlockHeader(gbt, job, extranonce1) {
 /**
  * Verify mining submission
  */
-async function verifyShare(gbt, job, extranonce1, poolDifficulty = 1) {
+async function verifyShare(gbt, job, extranonce1, poolDifficulty = 1000) {
   const header = buildBlockHeader(gbt, job, extranonce1);
   const hash = doubleSHA256(header);
 

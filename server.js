@@ -2,16 +2,16 @@
 
 const net = require('node:net');
 const rpcServices = require('./src/backend/controller/rpcServices');
-const getBlockTemplateBuilder = require('./src/backend/builder/blockTemplateBuilder');
 const submitBlockBuilder = require('./src/backend/builder/submitBlockBuilder');
-
+const getBlockTemplateBuilder = require('./src/backend/builder/blockTemplateBuilder');
+const verifyShares = require('./src/backend/utils/verifyShares');
 const bs58 = require('bs58');
 const crypto = require('crypto');
 
 // --- Configuration ---
 const proxyPort = 3333; // Port for miners to connect to
 const rpcHost = '192.168.7.149'; // Digibyte Core RPC host
-const rpcPort = 9002; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
+const rpcPort = 9001; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
 const rpcAuth = 'digiuser:digipoolpass'; // CHANGE THIS
 const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
 const defaultDifficulty = 1000; //Set the minimum difficulty level for miners
@@ -33,19 +33,6 @@ let currentJob = null; // Stores the current block template from Digibyte Core
 let isFetchingJob = false; // Flag to prevent concurrent getblocktemplate calls
 
 console.log(`Starting Slim Stratum Solo Proxy...`);
-
-/**
- * Calculates the difficulty from the compact 'bits' format.
- * @param {string} bitsHex The 'bits' value from the block template as a hex string.
- * @returns {number} The calculated difficulty.
- */
-function difficultyFromBits(bitsHex) {
-    const targetMax = 0x0000ffff * Math.pow(2, 208); // Difficulty 1 target
-    const exponent = parseInt(bitsHex.substring(0, 2), 16);
-    const mantissa = parseInt(bitsHex.substring(2, 8), 16);
-    const target = mantissa * Math.pow(2, 8 * (exponent - 3));
-    return targetMax / target;
-}
 
 
 /**
@@ -129,7 +116,7 @@ async function fetchAndNotifyNewJob() {
         
         // Digibyte Core requires the 'segwit' rule to be specified to get a valid block template.
         const template = await getBlockTemplateBuilder.getBlockTemplate(config);
-        console.log(`Template received: ${JSON.stringify(template)}`);
+       console.log(`Template received: ${JSON.stringify(template)}`);
         
         // Construct coinbase1 and coinbase2 for mining.notify
         const heightBuffer = Buffer.alloc(4);
@@ -307,8 +294,7 @@ const server = net.createServer((socket) => {
 
                         // Extract submitted share data from miner
                         const [workerName, submittedJobId, extranonce2, ntimeHex, nonceHex, versionBits] = request.params;
-                        console.log(`versionBits: ${versionBits}, Converted: ${difficultyFromBits(versionBits)}`);
-                        console.log(`currentJobBits: ${currentJob.bits}, Converted: ${difficultyFromBits(currentJob.bits)}`);
+                        
                         
                         if (submittedJobId !== currentJob.previousblockhash) {
                             console.warn(`Miner ${socket.remoteAddress} submitted share for outdated job: ${submittedJobId} vs current ${currentJob.previousblockhash}`);
@@ -322,7 +308,16 @@ const server = net.createServer((socket) => {
                             break;
                         }
                         //See if we should even try to submit this block, has to be equal of greater than the currentJobBits
-                        if(difficultyFromBits(versionBits) >= difficultyFromBits(currentJob.bits)){
+                        let job = {
+                            jobId: submittedJobId,
+                            extranonce2: extranonce2,
+                            ntime: ntimeHex,
+                            nonce: nonceHex,
+                        }
+                        let Verify = verifyShares.verifyShare(currentJob, job, extranonce1, config.defaultDifficulty);
+                        let meetsShareTarget = verify.meetsShareTarget;
+                        let meetsNetworkTarget = verify.meetsNetworkTarget;
+                        if(meetsNetworkTarget){ // worthy of submission to the node
                             console.log(`Miner ${socket.remoteAddress} submitted a potential block solution! Reconstructing and submitting...`);
 
                             // --- Block Construction Logic ---
@@ -398,11 +393,14 @@ const server = net.createServer((socket) => {
 
                             // 5. Submit the block to the Digibyte Core node.
                             console.log(`Would have sent this to submitBlock: ${blockHex},${request.id},${socket.remoteAddress}`);
-                            //submitBlock(blockHex, request.id, socket);
-                        }else{
+                            submitBlock(blockHex, request.id, socket);
+                            break;
+                        }
+                        if(meetsShareTarget){ //Worthy of a share for POW
                             //Send back a message saying we accepted the share, even though it wasn't worthy of a new block
                             socket.write(JSON.stringify({ id: request.id, result: true, error: null }) + '\n');
-                            console.log(`versionBits was not equal or greater than currentJob.bits, so didn't bother to submit to node.`);
+                            console.log(`was a good POW share but not worthy of submitting as a block, so didn't bother to submit to node.`);
+                            break;
                         }
                         //End of submit section
                         break;
