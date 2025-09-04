@@ -132,13 +132,13 @@ async function fetchAndNotifyNewJob() {
             console.error('Failed to get a valid block template. Check Digibyte Core. Template:', JSON.stringify(template));
             isFetchingJob = false;
             return;
-        }   
+        }  
+        //No matter what we should refresh the currentJob so as transaction details come across we have them for block submission.
+        currentJob = template;
+        
         //See if we have a new block in the tempalte
-        if(currentHeight !== template.height){
-            //We have a new block, so swap the currentJob and set the notify flag to true;
-            currentJob = template;
-            console.log(`New job received: block ${template.height} - prevhash ${template.previousblockhash}`);
-        }else{
+        if(currentHeight === template.height){
+            console.log(`Updated block template: block ${template.height} - prevhash ${template.previousblockhash}`);
             //Block is not new so no need to notify any miners
             isNewBlock=false;
             console.log(`curentJob is the current block height, so not notifying any miners.`);
