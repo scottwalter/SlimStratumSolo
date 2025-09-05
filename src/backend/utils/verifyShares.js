@@ -213,26 +213,41 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         const networkTarget = nBitsToTarget(currentJob.bits);
         
         // Calculate pool target (difficulty 1 target divided by pool difficulty)
-        // DigiByte uses the same difficulty calculation as Bitcoin
-        const diff1Target = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
+        // DigiByte uses the same difficulty calculation as Bitcoin - corrected to match miningcore
+        const diff1Target = BigInt('0x00ffff0000000000000000000000000000000000000000000000000000');
         const poolTarget = diff1Target / BigInt(poolDifficulty);
         
-        console.log('Target calculations:', {
+        // Calculate share difficulty using floating point arithmetic (like miningcore does)
+        // We need to convert to Number for proper floating point division
+        const shareDiff = Number(diff1Target) / Number(hashInt);
+        const stratumDifficulty = poolDifficulty;
+        const ratio = shareDiff / stratumDifficulty;
+        
+        console.log('Target calculations (miningcore approach):', {
             diff1Target: diff1Target.toString(16),
             poolDifficulty,
             poolTarget: poolTarget.toString(16),
             networkTarget: networkTarget.toString(16),
-            hashInt: hashInt.toString(16)
+            hashInt: hashInt.toString(16),
+            shareDiff: shareDiff,
+            ratio: ratio
         });
-
+        
+        // Use miningcore's validation logic: ratio >= 0.99 for share acceptance
+        const meetsShareTarget = ratio >= 0.99;
+        const meetsNetworkTarget = hashInt <= networkTarget;
+        
         const result = {
             hash: hashHex,
             hashInt: hashInt.toString(),
             networkTarget: networkTarget.toString(),
             poolTarget: poolTarget.toString(),
-            meetsShareTarget: hashInt <= poolTarget,
-            meetsNetworkTarget: hashInt <= networkTarget,
-            difficulty: Number(diff1Target / hashInt)
+            shareDiff: shareDiff,
+            stratumDifficulty: stratumDifficulty,
+            ratio: ratio,
+            meetsShareTarget: meetsShareTarget,
+            meetsNetworkTarget: meetsNetworkTarget,
+            difficulty: shareDiff
         };
 
         return result;
