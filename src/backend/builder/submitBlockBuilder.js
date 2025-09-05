@@ -1,5 +1,6 @@
 // submitblock_builder.js
 const crypto = require('crypto');
+const rpcServices = require('../controller/rpcServices');
 
 /**
  * Build a hex-encoded raw block suitable for submitblock.
@@ -156,8 +157,39 @@ function buildSubmitBlockHex(gbt, payoutScriptPubKeyHex, opts = {}) {
   // --- 6) Final block = header + varint(tx_count) + transactions ---
   const block = Buffer.concat([header, varInt(1 /* tx count */), tx]);
   
-  console.log(`submitBlockBuilder: ${rawBlockHex}`);
   return block.toString('hex');
+}
+
+/**
+ * Submits a fully constructed block hex to the Digibyte Core node and handles the response.
+ * @param {string} blockHex The full, serialized block in hex format.
+ * @param {string|number} requestId The JSON-RPC request ID from the miner's submission.
+ * @param {net.Socket} socket The miner's socket connection.
+ * @param {Object} config Configuration object with RPC settings.
+ */
+async function submitBlock(blockHex, requestId, socket, config) {
+    try {
+        const submissionResult = await rpcServices.callRPCService(config, 'submitblock', [blockHex]);
+        if (submissionResult === null) {
+            // A 'null' result from submitblock means the block was accepted.
+            console.log('🎉🎉🎉 BLOCK FOUND AND ACCEPTED! 🎉🎉🎉');
+            socket.write(JSON.stringify({ id: requestId, result: true, error: null }) + '\n');
+            
+            // Return success status so server.js can fetch new job
+            return { success: true, result: submissionResult };
+        } else {
+            // The node returned an error string (e.g., "inconclusive", "duplicate", "high-hash").
+            console.warn(`Block rejected by Digibyte Core: ${submissionResult}`);
+            socket.write(JSON.stringify({ id: requestId, result: false, error: [22, `Block rejected: ${submissionResult}`, null] }) + '\n');
+            
+            return { success: false, result: submissionResult };
+        }
+    } catch (e) {
+        console.error('Error submitting block to Digibyte Core:', e.message);
+        socket.write(JSON.stringify({ id: requestId, result: false, error: [-32000, `RPC submission error: ${e.message}`, null] }) + '\n');
+        
+        return { success: false, error: e.message };
+    }
 }
 
 // ----------------------
@@ -203,4 +235,4 @@ if (require.main === module) {
   console.log(`submitBlockBuilder: ${rawBlockHex}`);
 }
 
-module.exports = { buildSubmitBlockHex };
+module.exports = { buildSubmitBlockHex, submitBlock };
