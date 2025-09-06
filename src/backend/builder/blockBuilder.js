@@ -76,37 +76,51 @@ function buildBlock(currentJob, job, extranonce1, versionBits, config) {
             versionBits
         });
 
-        // 1. Create the coinbase transaction
+        // 1. Create the coinbase transaction EXACTLY as sent in mining.notify
+        // Reconstruct coinbase1 + extranonce1 + extranonce2 + coinbase2 format
         const heightBuffer = Buffer.alloc(4);
         heightBuffer.writeUInt32LE(currentJob.height);
-        const heightHex = heightBuffer.toString('hex');
-        // Use fixed push opcode '04' for 4 bytes, matching server.js mining.notify
-        const heightPushOp = '04'; 
-        const coinbaseScriptHex = heightPushOp + heightHex + extranonce1 + job.extranonce2;
-
-        // scriptPubKey: A standard P2PKH script sending the reward to the pool's address
+        const heightHexLE = heightBuffer.toString('hex');
+        const heightPushOp = '04';
+        
+        // Build coinbase1 exactly like server.js does
+        const coinbase1 = [
+            '01000000', // transaction version (1, little-endian)
+            '01', // input count
+            '00'.repeat(32), // null TXID
+            'ffffffff', // null VOUT
+            '23', // scriptSig length (35 bytes total)
+            heightPushOp + heightHexLE // height push + height
+        ].join('');
+        
+        // Build coinbase2 exactly like server.js does
         const decoded = bs58.decode(config.poolPayoutAddress);
-        const pubKeyHash = decoded.slice(1, -4); // Remove version byte and checksum, keep as buffer
-        const payoutScriptPubKey = '76a914' + pubKeyHash.toString('hex') + '88ac';
+        const pubKeyHash = decoded.slice(1, -4);
+        const payoutScriptPubKey = '76a914' + Buffer.from(pubKeyHash).toString('hex') + '88ac';
+        
+        const coinbase2 = [
+            '0f4d696e65642062792053636f74747900000000', // "Mined by Scott" + padding
+            '02', // output count
+            '0000000000000000', // witness commitment value
+            '26', // scriptPubKey length
+            '6a24' + (currentJob.default_witness_commitment || 'aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9'), // OP_RETURN + witness commitment
+            toLittleEndianHex(currentJob.coinbasevalue, 8), // pool payout value
+            '19', // scriptPubKey length
+            payoutScriptPubKey, // pool payout scriptPubKey
+            '00000000' // locktime
+        ].join('');
+        
+        // Reconstruct complete coinbase transaction as miner would
+        const completeCoinbaseTx = coinbase1 + extranonce1 + job.extranonce2 + coinbase2;
+        console.log('Coinbase reconstruction:', {
+            coinbase1: coinbase1,
+            extranonce1: extranonce1,
+            extranonce2: job.extranonce2,
+            coinbase2: coinbase2,
+            complete: completeCoinbaseTx
+        });
 
-        const coinbaseTxHex = toLittleEndianHex(currentJob.version, 4) + // version
-            '00' + // SegWit marker (if version >= 0x20000000)
-            '01' + // SegWit flag (if version >= 0x20000000)
-            '01' + // number of inputs
-            '0000000000000000000000000000000000000000000000000000000000000000' + // prevout hash (null)
-            'ffffffff' + // prevout index (max)
-            toVarIntHex(coinbaseScriptHex.length / 2) + coinbaseScriptHex + // scriptSig
-            'ffffffff' + // sequence
-            '02' + // number of outputs (now 2: payout + witness commitment)
-            toLittleEndianHex(currentJob.coinbasevalue, 8) + // Output 1: pool payout value
-            toVarIntHex(payoutScriptPubKey.length / 2) + // Output 1: pool payout scriptPubKey length
-            payoutScriptPubKey + // Output 1: pool payout scriptPubKey
-            '0000000000000000' + // Output 2: witness commitment value (0 DGB)
-            toVarIntHex((currentJob.default_witness_commitment?.length / 2 || 32) + 2) + // Output 2: witness commitment scriptPubKey length
-            '6a24' + (currentJob.default_witness_commitment || '0000000000000000000000000000000000000000000000000000000000000000') + // Output 2: witness commitment
-            '00000000'; // locktime
-
-        const coinbaseTx = Buffer.from(coinbaseTxHex, 'hex');
+        const coinbaseTx = Buffer.from(completeCoinbaseTx, 'hex');
         const coinbaseTxid = sha256d(coinbaseTx);
 
         // 2. Calculate the Merkle Root
@@ -129,8 +143,22 @@ function buildBlock(currentJob, job, extranonce1, versionBits, config) {
         // 3. Construct the 80-byte block header
         const header = Buffer.alloc(80);
         
-        // Use versionBits from miner if available (for ASICBOOST), otherwise use template version
-        header.write(versionBits ? reverseHex(versionBits) : toLittleEndianHex(currentJob.version, 4), 0, 4, 'hex');
+        // Handle version bits from miner
+        if (versionBits) {
+            // versionBits from miner submission is the XOR result: rolled_version ^ template_version
+            // We need to XOR it back with template version to get the actual rolled version
+            const versionBitsInt = parseInt(versionBits, 16);
+            const rolledVersion = versionBitsInt ^ currentJob.version;
+            header.writeUInt32LE(rolledVersion, 0);
+            console.log('Version calculation:', {
+                templateVersion: '0x' + currentJob.version.toString(16),
+                versionBitsFromMiner: versionBits,
+                calculatedRolledVersion: '0x' + rolledVersion.toString(16)
+            });
+        } else {
+            // Use template version as fallback
+            header.writeUInt32LE(currentJob.version, 0);
+        }
         header.write(reverseHex(currentJob.previousblockhash), 4, 32, 'hex');
         merkleRoot.copy(header, 36);
         header.write(job.ntime, 68, 4, 'hex'); // ntime from miner is already little-endian

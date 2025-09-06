@@ -11,10 +11,11 @@ const crypto = require('crypto');
 // --- Configuration ---
 const proxyPort = 3333; // Port for miners to connect to
 const rpcHost = '192.168.7.149'; // Digibyte Core RPC host
-const rpcPort = 9001; // Digibyte Core RPC port (production)
+const rpcPort = 9002; // Digibyte Core RPC port (production)
 const rpcAuth = 'digiuser:digipoolpass'; // CHANGE THIS
-const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
-const defaultDifficulty = 1000; //Set standard difficulty as suggested by miner
+//const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
+const poolPayoutAddress = 'syz2EgnGdGVvn1fcHCcj7pGkmY53JW71fv'; //legacy testnet address p2pkh style
+const defaultDifficulty = 0.0000000001; //Set very low difficulty for testnet to accept typical BitAxe shares
 //Create a config object to pass around for use
 const config = {
     "proxyPort":proxyPort,
@@ -253,20 +254,23 @@ const server = net.createServer((socket) => {
 
                 switch (request.method) {
                     case 'mining.subscribe':
+                        // Generate single subscription ID like miningcore (both difficulty and notify use same ID)
+                        const subscriptionId = crypto.randomBytes(8).toString('hex').toUpperCase();
+                        
                         const subscribeResponse = JSON.stringify({
-                            id: request.id,
                             result: [
                                 [
-                                    ['mining.set_difficulty', 'subscription_id'], // Subscription ID for difficulty notifications
-                                    ['mining.notify', 'subscription_id'] // Subscription ID for work notifications
+                                    ['mining.set_difficulty', subscriptionId], // Same subscription ID for both
+                                    ['mining.notify', subscriptionId] // Same subscription ID for both
                                 ],
                                 extranonce1, // Session-wide extranonce1
                                 4 // Extranonce2_size (4 bytes to match miningcore)
                             ],
+                            id: request.id, // ID at the end like miningcore
                             error: null,
                         }) + '\n';
                         socket.write(subscribeResponse);
-                        console.log(`Sent mining.subscribe response to ${socket.remoteAddress}.`);
+                        console.log(`Sent mining.subscribe response to ${socket.remoteAddress} with subscription ID: ${subscriptionId}.`);
                         break;
 
                     case 'mining.authorize':
@@ -279,12 +283,17 @@ const server = net.createServer((socket) => {
                         socket.authenticated = true; // Mark as authenticated
                         
                         // Send difficulty notification AFTER authorization
-                        // Use config difficulty for testing - make it extremely low for guaranteed acceptance
                         socket.difficulty = config.defaultDifficulty; // Store difficulty on socket for verification
+                        console.log('DEBUG: Difficulty setting:', {
+                            'config.defaultDifficulty': config.defaultDifficulty,
+                            'socket.difficulty': socket.difficulty,
+                            'typeof config.defaultDifficulty': typeof config.defaultDifficulty
+                        });
                         const difficultyNotification = JSON.stringify({
-                            id: null,
+                            jsonrpc: '2.0',
                             method: 'mining.set_difficulty',
-                            params: [socket.difficulty]
+                            params: [socket.difficulty],
+                            id: null
                         }) + '\n';
                         socket.write(difficultyNotification);
                         
@@ -292,12 +301,18 @@ const server = net.createServer((socket) => {
                         break;
 
                     case 'mining.configure':
+                        // BitaxeOS requests version-rolling with mask "ffffffff"
+                        // Respond with reduced mask like miningcore: "1fffe000"
                         const configureResponse = JSON.stringify({
                             id: request.id,
-                            result: {}, // Successful configuration with no specific extensions enabled.
+                            result: {
+                                "version-rolling": true,
+                                "version-rolling.mask": "1fffe000"
+                            },
                             error: null,
                         }) + '\n';
                         socket.write(configureResponse);
+                        console.log(`Sent mining.configure response with version-rolling mask to ${socket.remoteAddress}.`);
                         break;
 
                     case 'mining.extranonce.subscribe':
@@ -369,12 +384,13 @@ const server = net.createServer((socket) => {
                             ntime: ntimeHex,
                             nonce: nonceHex,
                         }
-                        let verify = await verifyShares.verifyShare(jobSnapshot, job, extranonce1, socket.difficulty || 1); // Use cached job snapshot for verification
+                        let verify = await verifyShares.verifyShare(jobSnapshot, job, extranonce1, socket.difficulty || 1, poolPayoutAddress); // Use cached job snapshot for verification
                         let meetsShareTarget = verify.meetsShareTarget;
                         let meetsNetworkTarget = verify.meetsNetworkTarget;
                         
                         console.log(`Share verification for ${socket.remoteAddress}:`, {
-                            difficulty: verify.difficulty || 'N/A',
+                            shareDifficulty: verify.difficulty || 'N/A',
+                            networkDifficulty: verify.networkDifficulty || 'N/A',
                             poolDifficulty: socket.difficulty || 1,
                             meetsShareTarget,
                             meetsNetworkTarget,
@@ -395,11 +411,10 @@ const server = net.createServer((socket) => {
                                 await fetchAndNotifyNewJob();
                             }
                             break;
-                        }
-                        if(meetsShareTarget){ //Worthy of a share for POW
-                            //Send back a message saying we accepted the share, even though it wasn't worthy of a new block
+                        } else if(meetsShareTarget){ 
+                            // Share meets pool difficulty but not network difficulty - accept as valid share
                             socket.write(JSON.stringify({ id: request.id, result: true, error: null }) + '\n');
-                            console.log(`was a good POW share but not worthy of submitting as a block, so didn't bother to submit to node.`);
+                            console.log(`Good POW share accepted but not worthy of submitting as block to node.`);
                             break;
                         }
                         

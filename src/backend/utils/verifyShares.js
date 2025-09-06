@@ -64,11 +64,26 @@ function nBitsToTarget(nBits) {
     const exponent = nBitsInt >>> 24;
     const coefficient = nBitsInt & 0xffffff;
     
+    console.log('DEBUG nBitsToTarget:', {
+        nBits: nBits,
+        nBitsInt: '0x' + nBitsInt.toString(16),
+        exponent: exponent,
+        coefficient: '0x' + coefficient.toString(16)
+    });
+    
+    let target;
     if (exponent <= 3) {
-        return BigInt(coefficient >>> (8 * (3 - exponent)));
+        target = BigInt(coefficient >>> (8 * (3 - exponent)));
     } else {
-        return BigInt(coefficient) << BigInt(8 * (exponent - 3));
+        target = BigInt(coefficient) << BigInt(8 * (exponent - 3));
     }
+    
+    console.log('DEBUG nBitsToTarget result:', {
+        targetHex: '0x' + target.toString(16),
+        targetDecimal: target.toString()
+    });
+    
+    return target;
 }
 
 /**
@@ -77,10 +92,15 @@ function nBitsToTarget(nBits) {
  * @param {Object} job - Mining submission parameters containing jobId, extranonce2, ntime, and nonce
  * @param {string} extranonce1 - Pool-assigned unique miner ID (hex)
  * @param {number} [poolDifficulty=1000] - Pool difficulty target
+ * @param {string} poolPayoutAddress - Pool payout address for coinbase transaction
  * @returns {Object} Verification results with meetsShareTarget and meetsNetworkTarget booleans
  */
-async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) {
+async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000, poolPayoutAddress) {
     try {
+        console.log('DEBUG verifyShare: Received poolDifficulty:', {
+            poolDifficulty: poolDifficulty,
+            'typeof poolDifficulty': typeof poolDifficulty
+        });
         // Build coinbase transaction for this share using EXACT same logic as server.js mining.notify
         const heightBuffer = Buffer.alloc(4);
         heightBuffer.writeUInt32LE(currentJob.height);
@@ -96,8 +116,10 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         // Create coinbase transaction using EXACT same logic as blockBuilder.js
         const bs58 = require('bs58');
         
-        // Use the actual payout address from config instead of placeholder
-        const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // From server.js config
+        // Use the payout address passed from server.js config
+        if (!poolPayoutAddress) {
+            throw new Error('poolPayoutAddress is required for share verification');
+        }
         const decoded = bs58.decode(poolPayoutAddress);
         const pubKeyHash = decoded.slice(1, -4); // Remove version byte and checksum, keep as buffer
         const payoutScriptPubKey = '76a914' + Buffer.from(pubKeyHash).toString('hex') + '88ac';
@@ -180,27 +202,64 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         // Get network target from nBits
         const networkTarget = nBitsToTarget(currentJob.bits);
         
-        // Calculate pool target (difficulty 1 target divided by pool difficulty)  
-        // Use standard Bitcoin difficulty 1 target
+        // Calculate network difficulty from target using Bitcoin's standard Diff1 target
+        // Bitcoin Diff1 target: 0x1d00ffff -> 0x00000000FFFF0000000000000000000000000000000000000000000000000000
         const diff1Target = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
         
-        // Calculate share difficulty using floating point arithmetic (like miningcore does)
-        // We need to convert to Number for proper floating point division
-        // Add shareMultiplier calibrated for DigiByte (determined by testing with actual miner results)
-        const shareMultiplier = 6685090344826; // ~2^42.6 - calibrated for DigiByte difficulty calculation
-        const shareDiff = (Number(diff1Target) / Number(hashInt)) * shareMultiplier;
+        // For very large numbers, use floating point division to avoid precision issues
+        const networkDifficulty = parseFloat(diff1Target.toString()) / parseFloat(networkTarget.toString());
+        
+        // DEBUG: Let's also check what DigiByte Core reports as the actual target from getblocktemplate
+        console.log('DEBUG: Compare with template target:', {
+            templateTarget: currentJob.target,
+            calculatedTarget: '0x' + networkTarget.toString(16),
+            diff1TargetHex: '0x' + diff1Target.toString(16),
+            calculatedNetworkDiff: networkDifficulty
+        });
+        
+        // Debug network difficulty calculation
+        console.log('Network difficulty debug:', {
+            nBits: currentJob.bits,
+            networkTarget: '0x' + networkTarget.toString(16),
+            networkTargetDecimal: networkTarget.toString(),
+            diff1Target: '0x' + diff1Target.toString(16),
+            networkDifficulty: networkDifficulty,
+            blockHeight: currentJob.height
+        });
+        
+        // Calculate share difficulty using proper high-precision arithmetic
+        // shareDiff = diff1Target / hashInt (standard Bitcoin difficulty calculation)
+        // Use string-based division for maximum precision since BigInt division truncates
+        const diff1TargetStr = diff1Target.toString();
+        const hashIntStr = hashInt.toString();
+        
+        // Perform division using decimal precision arithmetic
+        // Since JavaScript numbers lose precision, we'll use a different approach:
+        // Convert to scientific notation and calculate
+        const diff1TargetFloat = parseFloat(diff1TargetStr);
+        const hashIntFloat = parseFloat(hashIntStr);
+        const shareDiff = diff1TargetFloat / hashIntFloat;
+        
+        console.log('DEBUG: Share difficulty calculation:', {
+            shareDiffFinal: shareDiff,
+            networkDifficulty: networkDifficulty,
+            meetsNetworkDiff: shareDiff >= networkDifficulty
+        });
+        
         const stratumDifficulty = poolDifficulty;
         const ratio = shareDiff / stratumDifficulty;
         
         
         // Use miningcore's validation logic: ratio >= 0.99 for share acceptance
         const meetsShareTarget = ratio >= 0.99;
+        // For network target: hash must be LESS than or equal to network target (lower hash = more difficulty)
         const meetsNetworkTarget = hashInt <= networkTarget;
         
         const result = {
             hash: hashHexBE,
             hashInt: hashInt.toString(),
             networkTarget: networkTarget.toString(),
+            networkDifficulty: networkDifficulty,
             shareDiff: shareDiff,
             stratumDifficulty: stratumDifficulty,
             ratio: ratio,
