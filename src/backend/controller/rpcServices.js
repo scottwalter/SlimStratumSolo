@@ -1,11 +1,14 @@
 const http = require('http');
 
-// --- Digibyte Core RPC Client ---
 /**
- * Makes an RPC call to the Digibyte Core server.
- * @param {string} method The RPC method to call (e.g., 'getblocktemplate', 'submitblock').
- * @param {Array} params An array of parameters for the RPC method.
- * @returns {Promise<any>} A promise that resolves with the RPC result or rejects with an error.
+ * Makes an RPC call to the DigiByte Core server.
+ * @param {Object} config - Configuration object containing RPC connection details
+ * @param {string} config.rpcHost - RPC server hostname 
+ * @param {number} config.rpcPort - RPC server port
+ * @param {string} config.rpcAuth - RPC authentication credentials (user:pass format)
+ * @param {string} method - The RPC method to call (e.g., 'getblocktemplate', 'submitblock')
+ * @param {Array} [params=[]] - Array of parameters for the RPC method
+ * @returns {Promise<any>} Promise that resolves with the RPC result or rejects with an error
  */
 async function callRPCService(config, method, params = []) {
     return new Promise((resolve, reject) => {
@@ -62,7 +65,7 @@ async function callRPCService(config, method, params = []) {
         req.end();
     });
 }
-module.exports =
-{
+
+module.exports = {
     callRPCService
-}
+};

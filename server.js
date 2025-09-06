@@ -11,10 +11,10 @@ const crypto = require('crypto');
 // --- Configuration ---
 const proxyPort = 3333; // Port for miners to connect to
 const rpcHost = '192.168.7.149'; // Digibyte Core RPC host
-const rpcPort = 9001; // Digibyte Core RPC port (mainnet default) -- USING A TEST NET INSTANCE!
+const rpcPort = 9001; // Digibyte Core RPC port (production)
 const rpcAuth = 'digiuser:digipoolpass'; // CHANGE THIS
 const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
-const defaultDifficulty = 1000; //Set the minimum difficulty level for miners
+const defaultDifficulty = 1000; //Set standard difficulty as suggested by miner
 //Create a config object to pass around for use
 const config = {
     "proxyPort":proxyPort,
@@ -40,9 +40,9 @@ console.log(`Starting Slim Stratum Solo Proxy...`);
 
 /**
  * Converts a number to a little-endian hex string of a given byte length.
- * @param {number} num The number to convert.
- * @param {number} byteLength The desired length of the hex string in bytes (e.g., 4 for version/ntime).
- * @returns {string} The little-endian hex string.
+ * @param {number} num - The number to convert
+ * @param {number} byteLength - The desired length of the hex string in bytes (e.g., 4 for version/ntime)
+ * @returns {string} The little-endian hex string
  */
 function toLittleEndianHex(num, byteLength) {
     const hex = num.toString(16).padStart(byteLength * 2, '0');
@@ -79,7 +79,7 @@ function cacheJobSnapshot(jobId, jobSnapshot) {
 // --- Stratum Server Logic ---
 
 /**
- * Fetches a new block template from Digibyte Core and notifies all connected, authenticated miners.
+ * Fetches a new block template from DigiByte Core and notifies all connected, authenticated miners
  */
 async function fetchAndNotifyNewJob() {
     if (isFetchingJob) {
@@ -254,16 +254,16 @@ const server = net.createServer((socket) => {
                         socket.authenticated = true; // Mark as authenticated
                         
                         // Send difficulty notification AFTER authorization
-                        // Use a very low difficulty to test verification first  
-                        const initialDifficulty = 1; // Minimum difficulty for testing
+                        // Use config difficulty for testing - make it extremely low for guaranteed acceptance
+                        socket.difficulty = config.defaultDifficulty; // Store difficulty on socket for verification
                         const difficultyNotification = JSON.stringify({
                             id: null,
                             method: 'mining.set_difficulty',
-                            params: [initialDifficulty]
+                            params: [socket.difficulty]
                         }) + '\n';
                         socket.write(difficultyNotification);
                         
-                        console.log(`Miner ${socket.remoteAddress} authorized and difficulty set to ${initialDifficulty}.`);
+                        console.log(`Miner ${socket.remoteAddress} authorized and difficulty set to ${socket.difficulty}.`);
                         break;
 
                     case 'mining.configure':
@@ -332,16 +332,16 @@ const server = net.createServer((socket) => {
                             ntime: ntimeHex,
                             nonce: nonceHex,
                         }
-                        let Verify = await verifyShares.verifyShare(jobSnapshot, job, extranonce1, 1); // Use cached job snapshot for verification
-                        let meetsShareTarget = Verify.meetsShareTarget;
-                        let meetsNetworkTarget = Verify.meetsNetworkTarget;
+                        let verify = await verifyShares.verifyShare(jobSnapshot, job, extranonce1, socket.difficulty || 1); // Use cached job snapshot for verification
+                        let meetsShareTarget = verify.meetsShareTarget;
+                        let meetsNetworkTarget = verify.meetsNetworkTarget;
                         
                         console.log(`Share verification for ${socket.remoteAddress}:`, {
-                            difficulty: Verify.difficulty || 'N/A',
-                            poolDifficulty: 1,
+                            difficulty: verify.difficulty || 'N/A',
+                            poolDifficulty: socket.difficulty || 1,
                             meetsShareTarget,
                             meetsNetworkTarget,
-                            hash: Verify.hash?.substring(0, 16) + '...' || 'N/A'
+                            hash: verify.hash?.substring(0, 16) + '...' || 'N/A'
                         });
                         if(meetsNetworkTarget){ // worthy of submission to the node
                             console.log(`Miner ${socket.remoteAddress} submitted a potential block solution! Reconstructing and submitting...`);

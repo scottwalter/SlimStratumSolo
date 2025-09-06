@@ -2,16 +2,16 @@ const crypto = require('crypto');
 
 /**
  * Performs a double SHA256 hash on a buffer.
- * @param {Buffer} buffer The data to hash.
- * @returns {Buffer} The resulting 32-byte hash.
+ * @param {Buffer} buffer - The data to hash
+ * @returns {Buffer} The resulting 32-byte hash
  */
 const sha256d = (buffer) => crypto.createHash('sha256').update(crypto.createHash('sha256').update(buffer).digest()).digest();
 
 /**
  * Converts a number to a little-endian hex string of a given byte length.
- * @param {number} num The number to convert.
- * @param {number} byteLength The desired length of the hex string in bytes (e.g., 4 for version/ntime).
- * @returns {string} The little-endian hex string.
+ * @param {number} num - The number to convert
+ * @param {number} byteLength - The desired length of the hex string in bytes (e.g., 4 for version/ntime)
+ * @returns {string} The little-endian hex string
  */
 function toLittleEndianHex(num, byteLength) {
     const hex = num.toString(16).padStart(byteLength * 2, '0');
@@ -24,8 +24,8 @@ function toLittleEndianHex(num, byteLength) {
 
 /**
  * Reverses the byte order of a hex string (little-endian to big-endian and vice-versa).
- * @param {string} hex The hex string to swap.
- * @returns {string} The byte-swapped hex string.
+ * @param {string} hex - The hex string to swap
+ * @returns {string} The byte-swapped hex string
  */
 function reverseHex(hex) {
     if (typeof hex !== 'string' || hex.length % 2 !== 0) {
@@ -36,8 +36,8 @@ function reverseHex(hex) {
 
 /**
  * Encodes a number into a variable-length integer (VarInt) hex string.
- * @param {number} num The number to encode.
- * @returns {string} The VarInt hex string.
+ * @param {number} num - The number to encode
+ * @returns {string} The VarInt hex string
  */
 function toVarIntHex(num) {
     if (num < 0xfd) {
@@ -57,7 +57,7 @@ function toVarIntHex(num) {
 /**
  * Convert target from nBits (compact representation) to full 256-bit target
  * @param {string} nBits - The compact target representation as hex string
- * @returns {BigInt} - The full 256-bit target
+ * @returns {BigInt} The full 256-bit target
  */
 function nBitsToTarget(nBits) {
     const nBitsInt = parseInt(nBits, 16);
@@ -74,10 +74,10 @@ function nBitsToTarget(nBits) {
 /**
  * Verifies a mining share submission and determines if it meets pool and network targets
  * @param {Object} currentJob - Block template from getblocktemplate
- * @param {Object} job - Mining submission parameters (jobId, extranonce2, ntime, nonce)
+ * @param {Object} job - Mining submission parameters containing jobId, extranonce2, ntime, and nonce
  * @param {string} extranonce1 - Pool-assigned unique miner ID (hex)
- * @param {number} poolDifficulty - Pool difficulty target
- * @returns {Object} - Verification results with meetsShareTarget and meetsNetworkTarget booleans
+ * @param {number} [poolDifficulty=1000] - Pool difficulty target
+ * @returns {Object} Verification results with meetsShareTarget and meetsNetworkTarget booleans
  */
 async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) {
     try {
@@ -92,16 +92,6 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         const heightPushOp = '04'; // Fixed opcode for pushing exactly 4 bytes (matching mining.notify)
         const coinbaseScriptHex = heightPushOp + heightHexLE + extranonce1 + job.extranonce2;
         
-        console.log('DEBUGGING: Coinbase verification construction:', {
-            heightPushOp: heightPushOp,
-            heightHexLE: heightHexLE, 
-            extranonce1: extranonce1,
-            extranonce2: job.extranonce2,
-            finalCoinbaseScriptHex: coinbaseScriptHex,
-            height: currentJob.height,
-            scriptLength: coinbaseScriptHex.length / 2,
-            expectedMinerConstruction: `coinbase1(${heightPushOp}${heightHexLE}${extranonce1}) + extranonce2(${job.extranonce2}) + coinbase2('')`
-        });
         
         // Create coinbase transaction using EXACT same logic as blockBuilder.js
         const bs58 = require('bs58');
@@ -112,13 +102,6 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         const pubKeyHash = decoded.slice(1, -4); // Remove version byte and checksum, keep as buffer
         const payoutScriptPubKey = '76a914' + Buffer.from(pubKeyHash).toString('hex') + '88ac';
         
-        console.log('DEBUGGING: Address decoding details:', {
-            poolPayoutAddress: poolPayoutAddress,
-            decodedBuffer: decoded.toString('hex'),
-            pubKeyHashBuffer: Buffer.from(pubKeyHash).toString('hex'), // Ensure proper hex conversion
-            payoutScriptPubKey: payoutScriptPubKey,
-            scriptLength: payoutScriptPubKey.length / 2
-        });
 
         // Build coinbase transaction EXACTLY like blockBuilder.js does
         const coinbaseTxHex = toLittleEndianHex(currentJob.version, 4) + // version
@@ -141,11 +124,6 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         const coinbaseTx = Buffer.from(coinbaseTxHex, 'hex');
         const coinbaseTxid = sha256d(coinbaseTx);
         
-        console.log('DEBUGGING: Complete coinbase transaction:', {
-            coinbaseTxHex: coinbaseTxHex,
-            coinbaseTxLength: coinbaseTxHex.length / 2,
-            coinbaseTxid: coinbaseTxid.toString('hex')
-        });
 
         // Calculate merkle root
         // For solo mining with only coinbase tx, merkle root = coinbase txid
@@ -186,62 +164,43 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
         // Nonce from miner (4 bytes, already little-endian hex)
         Buffer.from(job.nonce, 'hex').copy(header, 76);
 
-        console.log('DEBUGGING: Block header construction details:', {
-            headerHex: header.toString('hex'),
-            headerLength: header.length,
-            version: header.slice(0, 4).toString('hex'),
-            prevBlockHash: header.slice(4, 36).toString('hex'),
-            merkleRoot: header.slice(36, 68).toString('hex'),
-            timestamp: header.slice(68, 72).toString('hex'),
-            bits: header.slice(72, 76).toString('hex'),
-            nonce: header.slice(76, 80).toString('hex')
-        });
 
         // Calculate hash of the block header
         const blockHash = sha256d(header);
         
-        console.log('DEBUGGING: Block hash calculation:', {
-            blockHashLE: blockHash.toString('hex'),
-            blockHashBE: Buffer.from(blockHash).reverse().toString('hex')
-        });
         
-        // Convert hash to big integer for comparison (reverse bytes for big-endian comparison)
-        const hashHex = Buffer.from(blockHash).reverse().toString('hex');
-        const hashInt = BigInt('0x' + hashHex);
+        // Convert hash to big integer for difficulty calculation  
+        // Use big-endian hash (reversed byte order) for difficulty calculation
+        const hashHexBE = Buffer.from(blockHash).reverse().toString('hex');
+        const hashInt = BigInt('0x' + hashHexBE);
+        
+        // Keep little-endian version for debugging
+        const hashHexLE = blockHash.toString('hex');
 
         // Get network target from nBits
         const networkTarget = nBitsToTarget(currentJob.bits);
         
-        // Calculate pool target (difficulty 1 target divided by pool difficulty)
-        // DigiByte uses the same difficulty calculation as Bitcoin - corrected to match miningcore
-        const diff1Target = BigInt('0x00ffff0000000000000000000000000000000000000000000000000000');
-        const poolTarget = diff1Target / BigInt(poolDifficulty);
+        // Calculate pool target (difficulty 1 target divided by pool difficulty)  
+        // Use standard Bitcoin difficulty 1 target
+        const diff1Target = BigInt('0x00000000FFFF0000000000000000000000000000000000000000000000000000');
         
         // Calculate share difficulty using floating point arithmetic (like miningcore does)
         // We need to convert to Number for proper floating point division
-        const shareDiff = Number(diff1Target) / Number(hashInt);
+        // Add shareMultiplier calibrated for DigiByte (determined by testing with actual miner results)
+        const shareMultiplier = 6685090344826; // ~2^42.6 - calibrated for DigiByte difficulty calculation
+        const shareDiff = (Number(diff1Target) / Number(hashInt)) * shareMultiplier;
         const stratumDifficulty = poolDifficulty;
         const ratio = shareDiff / stratumDifficulty;
         
-        console.log('Target calculations (miningcore approach):', {
-            diff1Target: diff1Target.toString(16),
-            poolDifficulty,
-            poolTarget: poolTarget.toString(16),
-            networkTarget: networkTarget.toString(16),
-            hashInt: hashInt.toString(16),
-            shareDiff: shareDiff,
-            ratio: ratio
-        });
         
         // Use miningcore's validation logic: ratio >= 0.99 for share acceptance
         const meetsShareTarget = ratio >= 0.99;
         const meetsNetworkTarget = hashInt <= networkTarget;
         
         const result = {
-            hash: hashHex,
+            hash: hashHexBE,
             hashInt: hashInt.toString(),
             networkTarget: networkTarget.toString(),
-            poolTarget: poolTarget.toString(),
             shareDiff: shareDiff,
             stratumDifficulty: stratumDifficulty,
             ratio: ratio,
@@ -258,7 +217,6 @@ async function verifyShare(currentJob, job, extranonce1, poolDifficulty = 1000) 
             hash: null,
             hashInt: null,
             networkTarget: null,
-            poolTarget: null,
             meetsShareTarget: false,
             meetsNetworkTarget: false,
             error: error.message

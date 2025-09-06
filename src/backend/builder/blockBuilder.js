@@ -3,16 +3,16 @@ const crypto = require('crypto');
 
 /**
  * Performs a double SHA256 hash on a buffer.
- * @param {Buffer} buffer The data to hash.
- * @returns {Buffer} The resulting 32-byte hash.
+ * @param {Buffer} buffer - The data to hash
+ * @returns {Buffer} The resulting 32-byte hash
  */
 const sha256d = (buffer) => crypto.createHash('sha256').update(crypto.createHash('sha256').update(buffer).digest()).digest();
 
 /**
  * Converts a number to a little-endian hex string of a given byte length.
- * @param {number} num The number to convert.
- * @param {number} byteLength The desired length of the hex string in bytes (e.g., 4 for version/ntime).
- * @returns {string} The little-endian hex string.
+ * @param {number} num - The number to convert
+ * @param {number} byteLength - The desired length of the hex string in bytes (e.g., 4 for version/ntime)
+ * @returns {string} The little-endian hex string
  */
 function toLittleEndianHex(num, byteLength) {
     const hex = num.toString(16).padStart(byteLength * 2, '0');
@@ -25,8 +25,8 @@ function toLittleEndianHex(num, byteLength) {
 
 /**
  * Reverses the byte order of a hex string (little-endian to big-endian and vice-versa).
- * @param {string} hex The hex string to swap.
- * @returns {string} The byte-swapped hex string.
+ * @param {string} hex - The hex string to swap
+ * @returns {string} The byte-swapped hex string
  */
 function reverseHex(hex) {
     if (typeof hex !== 'string' || hex.length % 2 !== 0) {
@@ -37,8 +37,8 @@ function reverseHex(hex) {
 
 /**
  * Encodes a number into a variable-length integer (VarInt) hex string.
- * @param {number} num The number to encode.
- * @returns {string} The VarInt hex string.
+ * @param {number} num - The number to encode
+ * @returns {string} The VarInt hex string
  */
 function toVarIntHex(num) {
     if (num < 0xfd) {
@@ -58,9 +58,9 @@ function toVarIntHex(num) {
 /**
  * Constructs a complete block hex from mining submission for DigiByte
  * @param {Object} currentJob - Block template from getblocktemplate
- * @param {Object} job - Mining submission parameters (jobId, extranonce2, ntime, nonce) 
+ * @param {Object} job - Mining submission parameters containing jobId, extranonce2, ntime, and nonce
  * @param {string} extranonce1 - Pool-assigned unique miner ID (hex)
- * @param {string} versionBits - Version bits from miner (optional, for ASICBOOST)
+ * @param {string} [versionBits] - Version bits from miner (optional, for ASICBOOST)
  * @param {Object} config - Configuration object with poolPayoutAddress
  * @returns {string} Complete block hex ready for submitblock
  */

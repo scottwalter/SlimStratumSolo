@@ -3,15 +3,14 @@ const crypto = require('crypto');
 const rpcServices = require('../controller/rpcServices');
 
 /**
- * Build a hex-encoded raw block suitable for submitblock.
- *
- * @param {object} gbt - The getblocktemplate JSON object.
- * @param {string} payoutScriptPubKeyHex - Hex scriptPubKey for the miner payout (e.g., P2PKH).
- * @param {object} [opts]
- * @param {number} [opts.txVersion=2] - Coinbase tx version.
- * @param {number} [opts.lockTime=0] - Coinbase locktime.
- * @param {Buffer|string} [opts.extraNonce=Buffer.alloc(0)] - Extra nonce (Buffer or hex string) embedded in coinbase scriptSig.
- * @returns {string} raw block hex
+ * Builds a hex-encoded raw block suitable for submitblock RPC call
+ * @param {Object} gbt - The getblocktemplate JSON object from DigiByte Core
+ * @param {string} payoutScriptPubKeyHex - Hex scriptPubKey for the pool payout address 
+ * @param {Object} [opts={}] - Optional parameters
+ * @param {number} [opts.txVersion=2] - Coinbase transaction version
+ * @param {number} [opts.lockTime=0] - Coinbase locktime
+ * @param {Buffer|string} [opts.extraNonce=Buffer.alloc(0)] - Extra nonce embedded in coinbase scriptSig
+ * @returns {string} Complete raw block hex ready for submitblock
  */
 function buildSubmitBlockHex(gbt, payoutScriptPubKeyHex, opts = {}) {
   const txVersion = opts.txVersion ?? 2;
@@ -161,11 +160,12 @@ function buildSubmitBlockHex(gbt, payoutScriptPubKeyHex, opts = {}) {
 }
 
 /**
- * Submits a fully constructed block hex to the Digibyte Core node and handles the response.
- * @param {string} blockHex The full, serialized block in hex format.
- * @param {string|number} requestId The JSON-RPC request ID from the miner's submission.
- * @param {net.Socket} socket The miner's socket connection.
- * @param {Object} config Configuration object with RPC settings.
+ * Submits a fully constructed block hex to DigiByte Core and handles the response
+ * @param {string} blockHex - The complete serialized block in hex format
+ * @param {string|number} requestId - JSON-RPC request ID from miner's submission
+ * @param {net.Socket} socket - The miner's socket connection
+ * @param {Object} config - Configuration object with RPC settings
+ * @returns {Promise<Object>} Object with success status and result details
  */
 async function submitBlock(blockHex, requestId, socket, config) {
     try {
@@ -190,49 +190,6 @@ async function submitBlock(blockHex, requestId, socket, config) {
         
         return { success: false, error: e.message };
     }
-}
-
-// ----------------------
-// Example usage
-// ----------------------
-if (require.main === module) {
-  // Paste your getblocktemplate JSON here:
-  const gbt = {
-    "capabilities":["proposal"],
-    "version":536871426,
-    "rules":["csv","!segwit","taproot"],
-    "vbavailable":{},
-    "vbrequired":0,
-    "previousblockhash":"8ef4684709c0e0ecb997b806ebbfe2ed198de7599a7cab28be52c779ece3810d",
-    "transactions":[],
-    "coinbaseaux":{},
-    "coinbasevalue":29011165960,
-    "longpollid":"8ef4684709c0e0ecb997b806ebbfe2ed198de7599a7cab28be52c779ece3810d46500",
-    "target":"0000000000000004bf5b00000000000000000000000000000000000000000000",
-    "mintime":1756982065,
-    "mutable":["time","transactions","prevblock"],
-    "noncerange":"00000000ffffffff",
-    "sigoplimit":80000,
-    "sizelimit":4000000,
-    "weightlimit":4000000,
-    "curtime":1756982154,
-    "bits":"1904bf5b",
-    "height":22034844,
-    "default_witness_commitment":"6a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9"
-  };
-
-  // Example P2PKH scriptPubKey (hex) for address with pubKeyHash = 0x00112233445566778899aabbccddeeff00112233:
-  // OP_DUP OP_HASH160 <20-byte pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
-  const pubKeyHash = "00112233445566778899aabbccddeeff00112233";
-  const payoutScriptPubKeyHex = `76a914${pubKeyHash}88ac`;
-
-  const rawBlockHex = buildSubmitBlockHex(gbt, payoutScriptPubKeyHex, {
-    txVersion: 2,
-    lockTime: 0,
-    extraNonce: '' // e.g., 'deadbeef' if you want
-  });
-
-  console.log(`submitBlockBuilder: ${rawBlockHex}`);
 }
 
 module.exports = { buildSubmitBlockHex, submitBlock };
