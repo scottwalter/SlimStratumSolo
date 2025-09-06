@@ -144,11 +144,11 @@ async function fetchAndNotifyNewJob() {
             
             // Construct a simplified mining.notify for miners (Stratum V1-like)  
             // Parameters: [job_id, prevhash, coinbase1, coinbase2, merkle_branches, version, nbits, ntime, clean_jobs]
-            const jobId = currentJob.previousblockhash; // Using prevhash as job_id, common in V1
+            const jobId = currentJob.height.toString(16).padStart(8, '0'); // Use block height as shorter job ID
             const prevHash = currentJob.previousblockhash;
             const merkleBranches = [];
             const version = toLittleEndianHex(currentJob.version, 4); // Block version, byte-swapped
-            const nBits = currentJob.bits; // Target difficulty in compact format
+            const nBits = currentJob.bits; // Target difficulty in compact format (keep as-is from template)
             const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
             const cleanJobs = true; // Clear previous jobs
             
@@ -310,7 +310,19 @@ const server = net.createServer((socket) => {
                         const [, submittedJobId, extranonce2, ntimeHex, nonceHex, versionBits] = request.params;
 
                         // CRITICAL FIX: Use cached job snapshot instead of currentJob for verification
-                        const jobSnapshot = jobCache.get(submittedJobId);
+                        // First try the submitted job ID, then fallback to previous block hash (for backward compatibility)
+                        let jobSnapshot = jobCache.get(submittedJobId);
+                        if (!jobSnapshot) {
+                            // Try to find by previous block hash as fallback
+                            for (const [cachedJobId, cachedJob] of jobCache.entries()) {
+                                if (cachedJob.previousblockhash === submittedJobId) {
+                                    jobSnapshot = cachedJob;
+                                    console.log(`Found job using previousblockhash fallback: ${submittedJobId} -> ${cachedJobId}`);
+                                    break;
+                                }
+                            }
+                        }
+                        
                         if (!jobSnapshot) {
                             console.warn(`Miner ${socket.remoteAddress} submitted share for unknown/expired job: ${submittedJobId}`);
                             const errorResponse = JSON.stringify({
