@@ -31,6 +31,7 @@ const connectedMiners = new Set();
 const extranonce1 = crypto.randomBytes(4).toString('hex'); // 4-byte extranonce for this proxy session
 let currentJob = null; // Stores the current block template from Digibyte Core
 let isFetchingJob = false; // Flag to prevent concurrent getblocktemplate calls
+let jobCounter = 1; // Simple incremental job counter like miningcore
 
 // Job tracking to prevent verification mismatches when templates change
 const jobCache = new Map(); // Map<jobId, jobSnapshot> to store exact job states sent to miners
@@ -104,16 +105,38 @@ async function fetchAndNotifyNewJob() {
         const template = await getBlockTemplateBuilder.getBlockTemplate(config);
        console.log(`Template received: ${JSON.stringify(template)}`);
         
-        // Construct coinbase1 and coinbase2 for mining.notify
+        // Construct proper coinbase transaction for mining.notify (split into coinb1 and coinb2)
         const heightBuffer = Buffer.alloc(4);
         heightBuffer.writeUInt32LE(template.height);
         const heightHexLE = heightBuffer.toString('hex'); // Little-endian hex of height
         const heightPushOp = '04'; // Opcode for pushing 4 bytes of data
 
-        // coinbase1: Prefix of the coinbase scriptSig (height + extranonce1)
-        const coinbase1 = heightPushOp + heightHexLE + extranonce1;
-        // coinbase2: Suffix of the coinbase scriptSig (empty for now, as no flags from template)
-        const coinbase2 = '';
+        // Build coinbase1: transaction version + input + partial scriptSig up to extranonce1 (matching miningcore format)
+        const coinbase1 = [
+            '01000000', // transaction version (1, little-endian) - matching miningcore
+            '01', // input count (1 byte)
+            '00'.repeat(32), // null TXID (32 bytes of zeros)
+            'ffffffff', // null VOUT (4 bytes)
+            '23', // scriptSig length (35 bytes total) - matching miningcore length
+            heightPushOp + heightHexLE // height push + height (matches miningcore: 04a45f5001)
+        ].join('');
+
+        // Build coinbase2: remaining scriptSig + sequence + outputs + locktime (matching miningcore format)
+        const decoded = bs58.decode(poolPayoutAddress);
+        const pubKeyHash = decoded.slice(1, -4);
+        const payoutScriptPubKey = '76a914' + Buffer.from(pubKeyHash).toString('hex') + '88ac';
+        
+        const coinbase2 = [
+            '0f4d696e65642062792053636f74747900000000', // "Mined by Scott" + padding (matching miningcore)
+            '02', // output count (2 outputs: witness commitment + payout)
+            '0000000000000000', // output 1: witness commitment value (0 satoshis)
+            '26', // output 1: scriptPubKey length (38 bytes: 0x6a + 0x24 + 36 bytes)
+            '6a24' + (template.default_witness_commitment || 'aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9'), // output 1: OP_RETURN + witness commitment
+            toLittleEndianHex(template.coinbasevalue, 8), // output 2: pool payout value
+            '19', // output 2: scriptPubKey length (25 bytes for P2PKH)
+            payoutScriptPubKey, // output 2: pool payout scriptPubKey
+            '00000000' // locktime (4 bytes)
+        ].join('');
         if (!template) {
             console.error('Failed to get a valid block template. Check Digibyte Core. Template:', JSON.stringify(template));
             isFetchingJob = false;
@@ -144,11 +167,12 @@ async function fetchAndNotifyNewJob() {
             
             // Construct a simplified mining.notify for miners (Stratum V1-like)  
             // Parameters: [job_id, prevhash, coinbase1, coinbase2, merkle_branches, version, nbits, ntime, clean_jobs]
-            const jobId = currentJob.height.toString(16).padStart(8, '0'); // Use block height as shorter job ID
+            const jobId = (jobCounter++).toString(16).padStart(8, '0').toLowerCase(); // Use incremental counter like miningcore
             const prevHash = currentJob.previousblockhash;
             const merkleBranches = [];
-            const version = toLittleEndianHex(currentJob.version, 4); // Block version, byte-swapped
-            const nBits = currentJob.bits; // Target difficulty in compact format (keep as-is from template)
+            // Use block version in big-endian format like miningcore (not little-endian)
+            const version = currentJob.version.toString(16).padStart(8, '0');
+            const nBits = currentJob.bits; // Keep nBits as-is from template (big-endian format)
             const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
             const cleanJobs = true; // Clear previous jobs
             
@@ -170,7 +194,7 @@ async function fetchAndNotifyNewJob() {
             });
 
             const notifyMessage = JSON.stringify({
-                id: null,
+                jsonrpc: '2.0',
                 method: 'mining.notify',
                 params: [
                     jobId,
@@ -183,6 +207,7 @@ async function fetchAndNotifyNewJob() {
                     nTime,
                     cleanJobs,
                 ],
+                id: null
             }) + '\n';
             
             let notifiedCount = 0;
@@ -236,7 +261,7 @@ const server = net.createServer((socket) => {
                                     ['mining.notify', 'subscription_id'] // Subscription ID for work notifications
                                 ],
                                 extranonce1, // Session-wide extranonce1
-                                4 // Extranonce2_size (4 bytes)
+                                4 // Extranonce2_size (4 bytes to match miningcore)
                             ],
                             error: null,
                         }) + '\n';
