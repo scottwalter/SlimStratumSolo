@@ -52,7 +52,20 @@ function toLittleEndianHex(num, byteLength) {
     }
     return littleEndianHex;
 }
-
+/**
+ * nTime for mining.notify message
+ */
+function formatNTimeForMiningNotify(timestamp) {
+    // nTime should be big-endian hex, 4 bytes (8 hex characters)
+    return timestamp.toString(16).padStart(8, '0');
+}
+/**
+ * version format for mining.notify message
+ */
+function formatVersionForMiningNotify(version) {
+    // Version should be big-endian hex, 4 bytes (8 hex characters)
+    return version.toString(16).padStart(8, '0');
+}
 /**
  * Stores a job snapshot in the cache for later verification
  * @param {string} jobId - The job identifier (typically previous block hash)
@@ -147,9 +160,10 @@ async function fetchAndNotifyNewJob() {
             const jobId = currentJob.previousblockhash; // Using prevhash as job_id, common in V1
             const prevHash = currentJob.previousblockhash;
             const merkleBranches = [];
-            const version = toLittleEndianHex(currentJob.version, 4); // Block version, byte-swapped
+            const version = formatVersionForMiningNotify(currentJob.version); // Block version, byte-swapped
             const nBits = currentJob.bits; // Target difficulty in compact format
-            const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
+            //const nTime = toLittleEndianHex(currentJob.curtime, 4); // Current block time, byte-swapped
+            const nTime = formatNTimeForMiningNotify(currentJob.curtime);
             const cleanJobs = true; // Clear previous jobs
             
             console.log('DEBUGGING: Coinbase parts sent to miner:', {
