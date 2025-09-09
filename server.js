@@ -4,7 +4,8 @@ const net = require('node:net');
 const submitBlockBuilder = require('./src/backend/builder/submitBlockBuilder');
 const getBlockTemplateBuilder = require('./src/backend/builder/blockTemplateBuilder');
 const blockBuilder = require('./src/backend/builder/blockBuilder');
-const verifyShares = require('./src/backend/utils/verifyShares');
+//const verifyShares = require('./src/backend/utils/verifyShares');
+const verifyShares = require('./src/backend/utils/dgbVerifier');
 const bs58 = require('bs58');
 const crypto = require('crypto');
 
