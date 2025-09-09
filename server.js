@@ -14,7 +14,7 @@ const rpcHost = '192.168.7.149'; // Digibyte Core RPC host
 const rpcPort = 9001; // Digibyte Core RPC port (production)
 const rpcAuth = 'digiuser:digipoolpass'; // CHANGE THIS
 const poolPayoutAddress = 'DTQTDEjbdfUvDZvU1Kp7bKLuqVQTF2qqJ7'; // CHANGE THIS to your pool's payout address
-const defaultDifficulty = 4096; //Set standard difficulty as suggested by miner
+const defaultDifficulty = 1000; //Set standard difficulty as suggested by miner
 //Create a config object to pass around for use
 const config = {
     "proxyPort":proxyPort,
